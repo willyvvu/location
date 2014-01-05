@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Location</title>
+		<style>
+			body{
+				margin:0
+			}
+			canvas,#boxholder{
+				position:absolute;
+				left:0;
+				right:0;
+				top:0;
+				bottom:0;
+				overflow:hidden;
+				z-index:100;
+			}
+			#boxholder{
+				text-align:center;
+				z-index:90;
+			}
+			*{
+				-webkit-user-select:none;
+			}
+			.box text{
+				stroke:initial;
+				fill:black;
+				/*font?*/
+			}
+			.box line,.box rect,.box circle{
+				fill:white;
+				stroke-width:1.5px;
+			}
+			.box .center{
+				stroke-dasharray:3,3;
+			}
+			.box .outlier{
+				fill:none;
+				stroke-opacity:0.2;
+			}
+		</style>
+	</head>
+	<body>
+		<canvas id="canvas"></canvas>
+		<canvas id="canvas2"></canvas>
+		<div id="boxholder"></div>
+		<script src="js/socket.io.js"></script>
+		<script src="js/jstat-1.0.0.js"></script>
+		<script src="js/d3.min.js"></script>
+		<script src="js/box.js"></script>
+		<script>
+			var socket=io.connect()
+			var id=Math.random()
+			var mobile=navigator.userAgent.search('Mobile')!=-1
+			if(mobile){
+				mobileInit()
+			}
+			else{
+				init()
+			}
+			function mobileInit(){
+				window.addEventListener('deviceorientation',function(event){
+					socket.emit('orient',[event.alpha,event.beta,event.gamma])
+				})
+				window.addEventListener('devicemotion',function(event){
+					socket.emit('motion',[event.acceleration.x,event.acceleration.y,event.acceleration.z])
+				})
+			}
+			function init(){
+				window.addEventListener('resize',resize)
+				canvas=document.getElementById('canvas')
+				canvas2=document.getElementById('canvas2')
+				mouse=false
+				pan=[0,0]
+				window.addEventListener('mousedown',function(event){
+					mouse=[event.pageX,event.pageY]
+					//console.log('down')
+				})
+				window.addEventListener('mousemove',function(event){
+					if(mouse!==false){
+						pan[0]+=event.pageX-mouse[0]
+						pan[1]+=event.pageY-mouse[1]
+						mouse[0]=event.pageX
+						mouse[1]=event.pageY
+					}
+					//console.log('move')
+				})
+				window.addEventListener('mouseup',function(event){
+					mouse=false
+					//console.log('up')
+				})
+				maxhistory=500
+				ctx=canvas.getContext('2d')
+				ctx2=canvas2.getContext('2d')
+				alldata={}
+				socket.on('orient',function(data,id){
+					if(!(id in alldata)){
+						alldata[id]={
+							alpha:[],
+							beta:[],
+							gamma:[],
+							x:[],
+							y:[],
+							z:[],
+							speed:[],
+							newpos:[0,0],
+							laststep:false,
+							clock:0,
+							px:[0],
+							py:[0],
+							steplength:1/20
+						}
+					}
+					var obj=alldata[id]
+					obj.alpha.unshift(data[0])
+					obj.beta.unshift(data[1])
+					obj.gamma.unshift(data[2])
+					if(obj.alpha.length>maxhistory){
+						obj.alpha.pop()
+						obj.beta.pop()
+						obj.gamma.pop()
+					}
+				}).on('motion',function(data,id){
+					if(!(id in alldata)){
+						return
+					}
+					var obj=alldata[id]
+					obj.clock++
+					obj.x.unshift(data[0])
+					obj.y.unshift(data[1])
+					obj.z.unshift(data[2])
+					var len=Math.sqrt(data[0]*data[0]+data[1]*data[1]+data[2]*data[2])
+					obj.speed.unshift(len)//(obj.speed.length?(len>obj.speed[0]?len*0.05+obj.speed[0]*0.95:len*0.01+obj.speed[0]*0.99):len)
+					if(obj.x.length>maxhistory){
+						obj.x.pop()
+						obj.y.pop()
+						obj.z.pop()
+						obj.speed.pop()
+					}
+					if(obj.laststep!==false){
+						obj.laststep++
+						if(obj.laststep>obj.x.length){
+							obj.laststep=false
+						}
+					}
+					if(Math.abs(obj.y[0])>1
+						&&Math.abs(obj.beta[0])>60
+						&&Math.abs(obj.beta[0])<120
+						//&&Math.abs(obj.beta[0])<Math.abs(obj.beta[1])
+					){
+						if(obj.laststep!==false&&obj.laststep<100){
+							for(var s=0;s<obj.laststep;s++){
+								var angle=Math.PI*obj.alpha[s]/180
+								obj.newpos[0]+=obj.speed[s]*obj.steplength*Math.cos(angle)
+								obj.newpos[1]+=obj.speed[s]*obj.steplength*Math.sin(angle)
+							}
+						}
+						obj.laststep=0
+					}
+					if(obj.clock%60==0){
+						if(obj.newpos[0]!=0||obj.newpos[1]!=0){
+							obj.px.unshift(obj.newpos[0]+obj.px[0])
+							obj.py.unshift(obj.newpos[1]+obj.py[0])
+							obj.newpos[0]=obj.newpos[1]=0
+							console.log('step')
+						}
+					}
+				}).on('lost',function(id){
+					delete alldata[id]
+				})
+			}
+			min={
+				alpha:0,
+				beta:-180,
+				gamma:-90,
+				x:-30,
+				y:-30,
+				z:-30,
+				speed:0
+			}
+			max={
+				alpha:360,
+				beta:180,
+				gamma:90,
+				x:30,
+				y:30,
+				z:30,
+				speed:30
+			}
+			color={
+				alpha:'orange',
+				beta:'yellow',
+				gamma:'purple',
+				x:'red',
+				y:'green',
+				z:'blue',
+				speed:'gray'
+			}
+			drawall=false
+			function renderData(){
+				document.body.style.backgroundColor=''
+				var updatesvg=true
+				for(var d in alldata){
+					var obj=alldata[d]
+					ctx.lineWidth=1
+					drawall=true
+					canvas.width=canvas.width
+					//ctx.translate(10,0)
+					//ctx.putImageData(ctx.getImageData(0,0,canvas.width,canvas.height),window.innerWidth/maxhistory,0)
+					//ctx.save()
+					//ctx.setTransform(1,0,0,1,100,0)
+					//ctx.restore()
+					//ctx.setTransform(1,0,0,1,0,0)
+					for(var f in obj){
+						if(f in color){
+							ctx.strokeStyle=color[f]
+							ctx.beginPath()
+							if(obj[f].length){
+								ctx.moveTo(0,
+									window.innerHeight*(1-(obj[f][0]-min[f])/(max[f]-min[f])))
+							}
+							for(var e=1;e<(drawall?obj[f].length:2);e++){
+								ctx.lineTo(window.innerWidth*(e/maxhistory),
+									window.innerHeight*(1-(obj[f][e]-min[f])/(max[f]-min[f])))
+							}
+							ctx.stroke()
+						}
+					}
+					canvas2.width=window.innerWidth
+					canvas2.height=window.innerHeight
+					ctx2.strokeStyle='black'
+					ctx2.lineJoin='round'
+					ctx2.lineCap='round'
+					ctx2.lineWidth=5
+					ctx2.beginPath()
+					ctx2.moveTo(window.innerWidth*0.5+pan[0],window.innerHeight*0.5+pan[1])
+					for(var e=obj.px.length-2;e>=0;e--){
+						ctx2.lineTo(window.innerWidth*0.5+pan[0]+obj.px[e],window.innerHeight*0.5+pan[1]+obj.py[e])
+					}
+					ctx2.stroke()
+					if(updatesvg){//Sync svg data
+						for(var e=0;e<svgdata.length;e++){
+							svgdata[e].unshift(obj[svgmeta[e]][0])
+							if(svgdata[e].length>100){
+								svgdata[e].pop()
+							}
+						}
+						if(obj.clock%2==0){
+							svg.data(svgdata).call(chart)
+						}
+						updatesvg=false
+					}
+				}
+				drawall=false
+				window.webkitRequestAnimationFrame(renderData)
+			}
+			renderData()
+			
+			
+			function iqr(k) {
+			  return function(d, i) {
+			    var q1 = d.quartiles[0],
+			        q3 = d.quartiles[2],
+			        iqr = (q3 - q1) * k,
+			        i = -1,
+			        j = d.length;
+			    while (d[++i] < q1 - iqr);
+			    while (d[--j] > q3 + iqr);
+			    return [i, j];
+			  };
+			}
+			function initChart(){
+				margin={top:10,right:50,bottom:20,left:50}
+				var outerwidth=120
+					,outerheight=window.innerHeight
+					,innerwidth=outerwidth-margin.left-margin.right
+					,innerheight=outerheight-margin.top-margin.bottom
+				data=[]
+				chart=d3.box()
+					.whiskers(iqr(1.5))
+					.width(innerwidth)
+					.height(innerheight)
+					.domain(function(d,i){
+						return [min[svgmeta[i]],max[svgmeta[i]]]
+					})
+				svgdata=[
+					[0],//Beta
+					[0],//Gamma
+					[0],//X
+					[0],//Y
+					[0],//Z
+					[0]//Speed
+				]
+				svgmeta=[
+					'beta',
+					'gamma',
+					'x',
+					'y',
+					'z',
+					'speed'
+				]
+				svg=d3.select('#boxholder').selectAll('svg')
+					.data(svgdata)
+					.enter().append('svg')
+					.attr('class','box')
+					.attr('width',outerwidth)
+					.attr('height',outerheight)
+					.attr('stroke',function(d,i){
+						return color[svgmeta[i]]
+					})
+					.append('g')
+					.attr('transform','translate('+margin.left+','+margin.top+')')
+					.call(chart)
+			}
+			function resize(){
+				canvas.width=window.innerWidth
+				canvas.height=window.innerHeight
+				drawall=true
+				if(window.chart){
+					var innerheight=window.innerHeight-margin.top-margin.bottom
+					chart.height(innerheight)
+					d3.select('#boxholder').selectAll('svg')
+						.attr('height',window.innerHeight)
+					svg.call(chart)
+				}
+			}
+			resize()
+			initChart()
+		</script>
+	</body>
+</html>
